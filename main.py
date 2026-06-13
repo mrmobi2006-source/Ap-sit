@@ -2,10 +2,10 @@ from fastapi import FastAPI, Query
 import httpx
 import random
 
-app = FastAPI(title="Shopify Gateway Bridge API")
+app = FastAPI(title="Dynamic Gateway Bridge API")
 
-# قائمة كافة المواقع التي أرسلتها بالكامل
-SHOPIFY_SITES = [
+# قائمة كافة المواقع التي أرسلتها بالكامل مدمجة كخيار افتراضي
+DEFAULT_SITES = [
     "https://cleetusm.myshopify.com", "https://demkoknives.myshopify.com", "https://doctoraromas.myshopify.com",
     "https://greatergoods-com.myshopify.com", "https://cy0517.myshopify.com", "https://freedomfiler.myshopify.com",
     "https://comfort1shoes.myshopify.com", "https://enjoyzibra.myshopify.com", "https://equipmentplus.myshopify.com",
@@ -114,48 +114,97 @@ SHOPIFY_SITES = [
 ]
 
 @app.get("/")
-async def check_gateway(
-    cc: str = Query(..., description="Card details in format card|mm|yyyy|cvv"),
-    url: str = Query(None, description="Target site URL (Optional)"),
-    proxy: str = Query(None, description="Proxy string (Optional)")
+async def check_card_gateway(
+    cc: str = Query(..., description="Card details formatted as card|mm|yyyy|cvv"),
+    pk: str = Query(None, description="Stripe Publishable Key (pk_live_...)"),
+    url: str = Query(None, description="Target site URL for web automation"),
+    proxy: str = Query(None, description="Proxy string formatted as ip:port or user:pass@ip:port")
 ):
     try:
-        # إذا لم يرسل البوت موقعاً محدداً، يتم اختيار موقع عشوائي من القائمة المتاحة
-        target_url = url if url else random.choice(SHOPIFY_SITES)
-        
-        # فرز بيانات البطاقة
+        # 1. فرز بيانات البطاقة
         cc_parts = cc.split('|')
         if len(cc_parts) != 4:
-            return {"Response": "Invalid input format from bot", "Status": "Error", "Gate": "Unknown", "Price": "-"}
-            
+            return {"Response": "Invalid card format parsed by API", "Status": "Error", "Gate": "Bridge", "Price": "-"}
+        
         card_num, month, year, cvv = cc_parts[0], cc_parts[1], cc_parts[2], cc_parts[3]
 
-        # إعداد البروكسي إذا تم تمريره من البوت
+        # إعداد البروكسي إن وجد
         mounts = {}
         if proxy:
             proxy_url = f"http://{proxy}"
             mounts = {"http://": proxy_url, "https://": proxy_url}
 
-        # التعديل الرئيسي: تفعيل follow_redirects=True لاتباع التوجيهات تلقائياً (مثل كود 301)
-        async with httpx.AsyncClient(mounts=mounts, timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(target_url)
-            
-            if response.status_code == 200:
-                return {
-                    "Response": "Connection established successfully",
-                    "Status": "Approved",
-                    "Gate": "Shopify_Generic",
-                    "Price": "1.00$"
+        # ----------------------------------------------------------------------
+        # المسار الأول: الفحص والتشفير الحقيقي إذا تم إرسال Stripe PK
+        # ----------------------------------------------------------------------
+        if pk:
+            async with httpx.AsyncClient(mounts=mounts, timeout=25.0, follow_redirects=True) as client:
+                stripe_url = "https://api.stripe.com/v1/payment_methods"
+                headers = {
+                    "Authorization": f"Bearer {pk}",
+                    "Content-Type": "application/x-www-form-urlencoded"
                 }
-            else:
-                return {
-                    "Response": f"Site returned status code {response.status_code}",
-                    "Status": "Dead",
-                    "Gate": "Shopify_Generic",
-                    "Price": "-"
+                data = {
+                    "type": "card",
+                    "card[number]": card_num,
+                    "card[exp_month]": month,
+                    "card[exp_year]": year,
+                    "card[cvc]": cvv,
                 }
 
+                response = await client.post(stripe_url, headers=headers, data=data)
+                res_json = response.json()
+
+                if response.status_code == 200 and "id" in res_json:
+                    return {
+                        "Response": "Card Tokenized Successfully (Valid Format/Structure)",
+                        "Status": "Approved",
+                        "Gate": f"Stripe_PK ({pk[:12]}...)",
+                        "Price": "Tokenized"
+                    }
+                elif "error" in res_json:
+                    err_msg = res_json["error"].get("message", "Unknown Stripe Error")
+                    err_code = res_json["error"].get("code", "declined")
+                    
+                    status = "Dead" if err_code in ["incorrect_number", "invalid_expiry_month", "invalid_expiry_year", "incorrect_cvc", "card_declined"] else "Error"
+                    return {
+                        "Response": f"Stripe Refused: {err_msg}",
+                        "Status": status,
+                        "Gate": "Stripe_PK",
+                        "Price": "-"
+                    }
+                else:
+                    return {
+                        "Response": f"Stripe API error with status {response.status_code}",
+                        "Status": "Error",
+                        "Gate": "Stripe_PK",
+                        "Price": "-"
+                    }
+
+        # ----------------------------------------------------------------------
+        # المسار الثاني: الاتصال بالويب وتخطي أكواد التوجيه (301)
+        # ----------------------------------------------------------------------
+        else:
+            target_url = url if url else random.choice(DEFAULT_SITES)
+            async with httpx.AsyncClient(mounts=mounts, timeout=25.0, follow_redirects=True) as client:
+                response = await client.get(target_url)
+                
+                if response.status_code == 200:
+                    return {
+                        "Response": "Web connection established successfully",
+                        "Status": "Approved",
+                        "Gate": "Shopify_Generic",
+                        "Price": "1.00$"
+                    }
+                else:
+                    return {
+                        "Response": f"Site web request failed with status {response.status_code}",
+                        "Status": "Dead",
+                        "Gate": "Shopify_Generic",
+                        "Price": "-"
+                    }
+
     except httpx.RequestError as exc:
-        return {"Response": f"Proxy or Connection Error: {exc}", "Status": "Error", "Gate": "Unknown", "Price": "-"}
+        return {"Response": f"Network/Proxy Timeout or Connection Error: {exc}", "Status": "Error", "Gate": "Bridge", "Price": "-"}
     except Exception as e:
-        return {"Response": f"Internal API Error: {str(e)}", "Status": "Error", "Gate": "Unknown", "Price": "-"}
+        return {"Response": f"Internal API Gateway Error: {str(e)}", "Status": "Error", "Gate": "Bridge", "Price": "-"}
