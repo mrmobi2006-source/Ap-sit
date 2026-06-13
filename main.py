@@ -118,7 +118,7 @@ async def check_card_gateway(
     cc: str = Query(..., description="Card details formatted as card|mm|yyyy|cvv"),
     pk: str = Query(None, description="Stripe Publishable Key (pk_live_...)"),
     url: str = Query(None, description="Target site URL for web automation"),
-    proxy: str = Query(None, description="Proxy string formatted as ip:port or user:pass@ip:port")
+    proxy: str = Query(None, description="Proxy string formatted as ip:port:user:pass or user:pass@ip:port")
 ):
     try:
         # 1. فرز وتدقيق صيغة البطاقة
@@ -128,8 +128,20 @@ async def check_card_gateway(
         
         card_num, month, year, cvv = cc_parts[0], cc_parts[1], cc_parts[2], cc_parts[3]
 
-        # صياغة رابط البروكسي القياسي المباشر لـ httpx
-        proxy_url = f"http://{proxy}" if proxy else None
+        # 2. معالج ذكي للبروكسي لإعادة صياغة الترتيب تلقائياً لخوادم httpx
+        proxy_url = None
+        if proxy:
+            proxy_parts = proxy.split(':')
+            # إذا كان البروكسي قادم بصيغة IP:Port:User:Pass (4 أجزاء)
+            if len(proxy_parts) == 4:
+                ip, port, user, password = proxy_parts[0], proxy_parts[1], proxy_parts[2], proxy_parts[3]
+                proxy_url = f"http://{user}:{password}@{ip}:{port}"
+            # إذا كان البروكسي قادم بصيغة IP:Port فقط (جزئين)
+            elif len(proxy_parts) == 2:
+                proxy_url = f"http://{proxy}"
+            # أي صيغة أخرى قياسية مثل user:pass@ip:port مرسلة جاهزة
+            else:
+                proxy_url = f"http://{proxy}" if not proxy.startswith("http") else proxy
 
         # ----------------------------------------------------------------------
         # المسار الأول: إذا أرسل البوت مفتاح Stripe PK (فحص مباشر وتشفير حقيقي)
